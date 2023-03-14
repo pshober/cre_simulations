@@ -51,6 +51,7 @@ def sim_setup():
     '''SET UP THE SOLAR SYSTEM'''
     sim = rebound.Simulation()
     sim.units = ('yr', 'AU', 'Msun')
+    sim.integrator = 'mercurius'
 
     sim.add("Sun")
     sim.add("Mercury")
@@ -62,6 +63,8 @@ def sim_setup():
     sim.add("Saturn")
     sim.add("Uranus")
     sim.add("Neptune")
+
+    sim.move_to_com()
 
     active_particles = sim.N
     sim.N_active = active_particles
@@ -80,19 +83,19 @@ def sim_setup():
 
     return sim, active_particles
 
-number_of_particles = 1000
+number_of_particles = 100
 n_clones = 10
 input_near_earth_pop_granvik = "/home/patrick/Downloads/Granvik+_2018_Icarus.csv"
 
 df = pd.read_csv(input_near_earth_pop_granvik)
 
-semi_major_axis = np.array(data['semi_major_axis'])
-eccentricity = np.array(data['eccentricity'])
-inclination = np.array(data['inclination'])
-long_ascending_node = np.array(data['long_ascending_node'])
-argument_perihelion = np.array(data['argument_perihelion'])
-mean_anomaly = np.array(data['mean_anomaly'])
-absolute_magnitude = np.array(data['absolute_magnitude'])
+semi_major_axis = np.array(df['semi_major_axis'])
+eccentricity = np.array(df['eccentricity'])
+inclination = np.array(df['inclination'])
+long_ascending_node = np.array(df['long_ascending_node'])
+argument_perihelion = np.array(df['argument_perihelion'])
+mean_anomaly = np.array(df['mean_anomaly'])
+absolute_magnitude = np.array(df['absolute_magnitude'])
 
 # divide up the dataset into reasonable chunks that can be integrated
 len_df = len(df)
@@ -109,34 +112,38 @@ else:
     shutil.rmtree(save_folder)
     os.mkdir(save_folder)
 
+# set up base simulation and save to use as a restart (faster)
 sim, active_particles = sim_setup()
 sim.save("solar_system.bin")
-for i in range(steps):
-    sim = rebound.Simulation("solar_system.bin")  # start rebound simulation
+
+for s in range(steps):
+
+    sim = rebound.Simulation("solar_system.bin")  # start new rebound simulation
+
+    if s == steps - 1:
+        a = semi_major_axis[s*number_of_particles:]
+        e = eccentricity[s*number_of_particles:]
+        inc = inclination[s*number_of_particles:]
+        Omega = long_ascending_node[s*number_of_particles:]
+        omega = argument_perihelion[s*number_of_particles:]
+        M = mean_anomaly[s*number_of_particles:]
+    else:
+        a = semi_major_axis[s*number_of_particles:(s*number_of_particles)+number_of_particles]
+        e = eccentricity[s*number_of_particles:(s*number_of_particles)+number_of_particles]
+        inc = inclination[s*number_of_particles:(s*number_of_particles)+number_of_particles]
+        Omega = long_ascending_node[s*number_of_particles:(s*number_of_particles)+number_of_particles]
+        omega = argument_perihelion[s*number_of_particles:(s*number_of_particles)+number_of_particles]
+        M = mean_anomaly[s*number_of_particles:(s*number_of_particles)+number_of_particles]
 
     # add particles to simulation
-    for n in range(number_of_particles): # adds particles within errors of each body
-        if i == steps - 1:
-            a = semi_major_axis[i*number_of_particles:],
-            e = eccentricity[i*number_of_particles:],
-            inc = inclination[i*number_of_particles:],
-            Omega = long_ascending_node[i*number_of_particles:],
-            omega = argument_perihelion[i*number_of_particles:],
-            M = mean_anomaly[i*number_of_particles:]
-        else:
-            a = semi_major_axis[i*number_of_particles:(i*number_of_particles)+n],
-            e = eccentricity[i*number_of_particles:(i*number_of_particles)+n],
-            inc = inclination[i*number_of_particles:(i*number_of_particles)+n],
-            Omega = long_ascending_node[i*number_of_particles:(i*number_of_particles)+n],
-            omega = argument_perihelion[i*number_of_particles:(i*number_of_particles)+n],
-            M = mean_anomaly[i*number_of_particles:(i*number_of_particles)+n])
+    for n in range(len(a)): # adds particles within errors of each body
 
         # add the particle from the dataset
-        sim.add(a=a, e=e, inc=inc, Omega=Omega, omega=omega, M=M)
+        sim.add(a=a[n], e=e[n], inc=inc[n], Omega=Omega[n], omega=omega[n], M=M[n], primary=sim.particles[0])
 
         # store pos/vel to generate clones based on them
-        x, y, z = sim.particles[0].x, sim.particles[0].y, sim.particles[0].z
-        vx, vy, vz = sim.particles[0].vx, sim.particles[0].vy, sim.particles[0].vz
+        x, y, z = sim.particles[-1].xyz
+        vx, vy, vz = sim.particles[-1].vxyz
 
         # generate random position and velocity deviation (AU, AU/yr)
         pos_dev_magnitude = (1000.0 * u.m).to(u.au).value
@@ -146,17 +153,17 @@ for i in range(steps):
         vel_variations = sample_spherical(n_clones - 1) * vel_dev_magnitude
 
         x_clones, y_clones, z_clones = x+pos_variations[0], y+pos_variations[1], z+pos_variations[2]
-        vx_clones, vy_clones, vz_clones = x+vel_variations[0], y+vel_variations[1], z+vel_variations[2]
+        vx_clones, vy_clones, vz_clones = vx+vel_variations[0], vy+vel_variations[1], vz+vel_variations[2]
 
         # add clones
         for c in range(n_clones-1):
-            sim.add(x=x_clones[c],y=x_clones[c],z=z_clones[c],vx=vx_clones[c],vy=vy_clones[c],vz=vz_clones[c])
+            sim.add(x=x_clones[c],y=y_clones[c],z=z_clones[c],vx=vx_clones[c],vy=vy_clones[c],vz=vz_clones[c])
 
     # integration params
     n_outputs = 100
     tmax = 50.0
     times = np.linspace(0, tmax, n_outputs)
-    results = np.zeros(shape=(ng_out+n_outputs, sim.N, 19)) * np.nan
+    results = np.zeros(shape=(n_outputs, sim.N, 7)) * np.nan
 
     # integrate
     for i, step in enumerate(times):
@@ -164,36 +171,39 @@ for i in range(steps):
         print(f"{percent} Integrated\nTimestep: {sim.dt}", flush=True, end="\033[F")
 
         for j in range(sim.N):
-            if rank == 0 or j >= active_particles + len(object_list):
-                # Correctly add to arrays no matter what core
-                if rank == 0:
-                    k = j
-                elif j >= active_particles + len(object_list):
-                    k = j - active_particles - len(object_list)
+            results[i,j,0] = step
+            results[i,j,1] = j
 
-                # if rank != 0:
-                #     logging.debug(f"rank: {rank}; Recorded Index: {j + (rank*(sim.N-active_particles))}; j: {j}; k: {k}; step: {step}")
+            if j == 0:  # if the sun...
+                results[i,j,2] = np.nan
+                results[i,j,3] = np.nan
+                results[i,j,4] = np.nan
+                results[i,j,5] = np.nan
+                results[i,j,6] = np.nan
+            else:
+                sun_orbit = sim.particles[j].calculate_orbit(sim.particles[0])
+                results[i,j,2] = sun_orbit.a
+                results[i,j,3] = sun_orbit.e
+                results[i,j,4] = sun_orbit.inc
+                results[i,j,5] = sun_orbit.Omega
+                results[i,j,6] = sun_orbit.omega
 
-                results[i+ng_out,k,0] = step
-                results[i+ng_out,k,1] = j + (rank*(sim.N-active_particles-len(object_list)))
-                results[i+ng_out,k,8] = sim.particles[j].a
-                results[i+ng_out,k,9] = sim.particles[j].e
-                results[i+ng_out,k,10] = sim.particles[j].inc
-                results[i+ng_out,k,11] = sim.particles[j].Omega
-                results[i+ng_out,k,12] = sim.particles[j].omega
+        sim.integrate(step)
+
+    results = np.concatenate(results)
 
     # save fits file in folder
     results_fits = fits.PrimaryHDU()
-    results_name = os.path.join(save_folder, f'results{i:05}.fits')
+    results_name = os.path.join(save_folder, f'results{s:05}.fits')
     results_fits.writeto(results_name)
 
-    cols = [fits.Column(name='time', format='D', array=results_all[:,0]),
-            fits.Column(name='index', format='D', array=results_all[:,1]),
-            fits.Column(name='a', format='D', array=results_all[:,2]),
-            fits.Column(name='e', format='D', array=results_all[:,3]),
-            fits.Column(name='inc', format='D', array=results_all[:,4]),
-            fits.Column(name='Omega', format='D', array=results_all[:,5]),
-            fits.Column(name='omega', format='D', array=results_all[:,6])]
+    cols = [fits.Column(name='time', format='D', array=results[:,0]),
+            fits.Column(name='index', format='D', array=results[:,1]),
+            fits.Column(name='a', format='D', array=results[:,2]),
+            fits.Column(name='e', format='D', array=results[:,3]),
+            fits.Column(name='inc', format='D', array=results[:,4]),
+            fits.Column(name='Omega', format='D', array=results[:,5]),
+            fits.Column(name='omega', format='D', array=results[:,6])]
 
     results_fits = fits.BinTableHDU.from_columns(cols)
 
